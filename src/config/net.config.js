@@ -2,23 +2,9 @@
  * @description 导出默认网路配置
  **/
 
-// 部署模式配置
-// - 'local': 本地开发模式，前端和后端都在本地运行
-// - 'github': GitHub Pages 部署模式，前端在 GitHub Pages，后端需要单独部署
-const DEPLOY_MODE = process.env.VUE_APP_DEPLOY_MODE || 'github'
-
-// 后端服务器地址（用于 GitHub Pages 部署模式）
-const BACKEND_SERVER_URL = process.env.VUE_APP_BACKEND_URL || 'https://ai-pro-9ceb.onrender.com'
-
-let baseURL
-
-if (process.env.NODE_ENV === 'development') {
-  // 开发环境：使用本地后端服务器
-  baseURL = 'http://localhost:3001'
-} else {
-  // 生产环境：使用 Render 后端服务器
-  baseURL = BACKEND_SERVER_URL
-}
+// 后端服务器地址（生产环境使用 Render）
+const BACKEND_SERVER_URL = 'https://ai-pro-9ceb.onrender.com'
+const baseURL = BACKEND_SERVER_URL
 
 const network = {
   // 默认的接口地址
