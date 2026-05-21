@@ -47,6 +47,7 @@ const validUsers = {
 
 const userStore = new Map()
 const userProxyMap = new Map()
+const imageStore = new Map()
 
 function initUsers() {
   userStore.set('admin', {
@@ -277,13 +278,14 @@ app.post('/api/image/upload', (req, res) => {
 
     const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
     
+    imageStore.set(imageId, imageBase64)
+    
     res.json({
       code: 200,
       success: true,
       msg: 'success',
       data: {
-        imageId,
-        imageBase64
+        imageId
       }
     })
   } catch (error) {
@@ -294,7 +296,7 @@ app.post('/api/image/upload', (req, res) => {
 
 app.post('/api/proxy/create', (req, res) => {
   try {
-    const { phone, targetUrl, expireMinutes = 60, imageBase64 = '' } = req.body
+    const { phone, targetUrl, expireMinutes = 60, imageId = '' } = req.body
 
     if (!targetUrl) {
       return res.status(400).json({ code: 400, success: false, msg: 'Target URL is required' })
@@ -307,6 +309,12 @@ app.post('/api/proxy/create', (req, res) => {
     }
 
     const expireMinutesNum = Math.min(Math.max(parseInt(expireMinutes) || 60, 1), 10080)
+    
+    let imageBase64 = ''
+    if (imageId && imageStore.has(imageId)) {
+      imageBase64 = imageStore.get(imageId)
+    }
+    
     const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64)
 
     res.json({
@@ -354,7 +362,7 @@ app.get('/api/proxy/list', (req, res) => {
 
 app.post('/api/proxy/batch-create', (req, res) => {
   try {
-    const { items } = req.body
+    const { items, imageId = '' } = req.body
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({ code: 400, success: false, msg: 'Items array is required' })
@@ -363,9 +371,14 @@ app.post('/api/proxy/batch-create', (req, res) => {
     const results = []
     const errors = []
 
+    let imageBase64 = ''
+    if (imageId && imageStore.has(imageId)) {
+      imageBase64 = imageStore.get(imageId)
+    }
+
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      const { phone, targetUrl, expireMinutes = 60, imageBase64 = '' } = item
+      const { phone, targetUrl, expireMinutes = 60 } = item
 
       if (!targetUrl) {
         errors.push({ index: i, phone, error: 'Target URL is required' })
