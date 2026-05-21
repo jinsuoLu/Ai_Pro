@@ -150,7 +150,6 @@
         loading: false,
         passwordType: 'password',
         redirect: undefined,
-        timeOutID: null,
         rememberMe: false,
       }
     },
@@ -167,14 +166,8 @@
     },
     beforeDestroy() {
       document.body.style.overflow = 'auto'
-      clearTimeout(this.timeOutID)
     },
     mounted() {
-      this.form.username = 'admin'
-      this.form.password = '123456'
-      this.timeOutID = setTimeout(() => {
-        this.handleLogin()
-      }, 8000)
     },
     methods: {
       handlePassword() {

@@ -3,18 +3,6 @@ const cors = require('cors')
 const { createProxyMiddleware } = require('http-proxy-middleware')
 const crypto = require('crypto')
 
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex')
-  const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex')
-  return `${salt}:${hash}`
-}
-
-function verifyPassword(password, storedPassword) {
-  const [salt, hash] = storedPassword.split(':')
-  const newHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex')
-  return hash === newHash
-}
-
 const privateKey = `-----BEGIN RSA PRIVATE KEY-----
 MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAMFPa+v52FkSUXvcUnrGI/XzW3EpZRI0s9BCWJ3oNQmEYA5luWW5p8h0uadTIoTyYweFPdH4hveyxlwmS7oefvbIdiP+o+QIYW/R4Wjsb4Yl8MhR4PJqUE3RCy6IT9fM8ckG4kN9ECs6Ja8fQFc6/mSl5dJczzJO3k1rWMBhKJD/AgMBAAECgYEAucMakH9dWeryhrYoRHcXo4giPVJsH9ypVt4KzmOQY/7jV7KFQK3x//27UoHfUCak51sxFw9ek7UmTPM4HjikA9LkYeE7S381b4QRvFuf3L6IbMP3ywJnJ8pPr2l5SqQ00W+oKv+w/VmEsyUHr+k4Z+4ik+FheTkVWp566WbqFsECQQDjYaMcaKw3j2Zecl8T6eUe7fdaRMIzp/gcpPMfT/9rDzIQk+7ORvm1NI9AUmFv/FAlfpuAMrdL2n7p9uznWb7RAkEA2aP934kbXg5bdV0R313MrL+7WTK/qdcYxATUbMsMuWWQBoS5irrt80WCZbG48hpocJavLNjbtrjmUX3CuJBmzwJAOJg8uP10n/+ZQzjEYXh+BszEHDuw+pp8LuT/fnOy5zrJA0dO0RjpXijO3vuiNPVgHXT9z1LQPJkNrb5ACPVVgQJBALPeb4uV0bNrJDUb5RB4ghZnIxv18CcaqNIft7vuGCcFBAIPIRTBprR+RuVq+xHDt3sNXdsvom4h49+Hky1b0ksCQBBwUtVaqH6ztCtwUF1j2c/Zcrt5P/uN7IHAd44K0gIJc1+Csr3qPG+G2yoqRM8KVqLI8Z2ZYn9c+AvEE+L9OQY=
 -----END RSA PRIVATE KEY-----`
@@ -40,44 +28,10 @@ const { timeLimitService } = require('./timeLimitService')
 const path = require('path')
 
 const app = express()
-const PORT = process.env.PORT || process.env.PROXY_PORT || 3001
+const PORT = process.env.PROXY_PORT || 3001
 
 app.use(cors())
-app.use(express.json({ limit: '10mb' }))
-
-const imageStore = new Map()
-function generateImageId() {
-  return 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-}
-
-app.post('/api/image/upload', (req, res) => {
-  try {
-    const { imageBase64 } = req.body
-    
-    if (!imageBase64 || !imageBase64.startsWith('data:image/')) {
-      return res.status(400).json({ code: 400, success: false, msg: 'Invalid image data' })
-    }
-    
-    const imageId = generateImageId()
-    imageStore.set(imageId, imageBase64)
-    
-    console.log(`[IMAGE] Uploaded image: ${imageId}, size: ${Math.round(imageBase64.length / 1024)}KB`)
-    
-    res.json({
-      code: 200,
-      success: true,
-      msg: 'success',
-      data: { imageId }
-    })
-  } catch (error) {
-    console.error('[IMAGE] Error uploading image:', error)
-    res.status(500).json({ code: 500, success: false, msg: 'Failed to upload image' })
-  }
-})
-
-function getImage(imageId) {
-  return imageStore.get(imageId) || ''
-}
+app.use(express.json())
 
 const accessTokens = {
   admin: 'admin-accessToken',
@@ -86,9 +40,9 @@ const accessTokens = {
 }
 
 const validUsers = {
-  admin: { password: hashPassword('123456'), role: 'admin' },
-  editor: { password: hashPassword('123456'), role: 'editor' },
-  test: { password: hashPassword('123456'), role: 'test' }
+  admin: { password: '123456', role: 'admin' },
+  editor: { password: '123456', role: 'editor' },
+  test: { password: '123456', role: 'test' }
 }
 
 const userStore = new Map()
@@ -98,35 +52,13 @@ function initUsers() {
   userStore.set('admin', {
     id: 'admin',
     username: 'admin',
-    password: hashPassword('123456'),
+    password: '123456',
     nickname: '管理员',
     role: 'admin',
     status: 'active',
     createdAt: Date.now(),
   })
   userProxyMap.set('admin', [])
-  
-  userStore.set('editor', {
-    id: 'editor',
-    username: 'editor',
-    password: hashPassword('123456'),
-    nickname: '编辑者',
-    role: 'editor',
-    status: 'active',
-    createdAt: Date.now(),
-  })
-  userProxyMap.set('editor', [])
-  
-  userStore.set('test', {
-    id: 'test',
-    username: 'test',
-    password: hashPassword('123456'),
-    nickname: '测试用户',
-    role: 'test',
-    status: 'active',
-    createdAt: Date.now(),
-  })
-  userProxyMap.set('test', [])
 }
 
 initUsers()
@@ -161,21 +93,20 @@ app.post('/login', (req, res) => {
   let user = validUsers[username]
   let userId = null
   
-  if (!user || !verifyPassword(password, user.password)) {
+  if (!user || user.password !== password) {
     user = userStore.get(username)
-    if (user && verifyPassword(password, user.password)) {
+    if (user) {
       userId = username
     } else {
-      user = null
       userStore.forEach((u, id) => {
-        if (u.username === username && verifyPassword(password, u.password)) {
+        if (u.username === username && u.password === password) {
           user = u
           userId = id
         }
       })
     }
     
-    if (!user) {
+    if (!user || user.password !== password) {
       return res.status(401).json({ code: 500, msg: '帐户或密码不正确' })
     }
   }
@@ -193,12 +124,6 @@ app.post('/login', (req, res) => {
   })
 })
 
-const rolePermissions = {
-  admin: ['admin', 'editor', 'user', 'proxy', 'all'],
-  editor: ['editor', 'user', 'proxy'],
-  user: ['user'],
-}
-
 app.post('/userInfo', (req, res) => {
   const { accessToken } = req.body
 
@@ -207,25 +132,9 @@ app.post('/userInfo', (req, res) => {
   }
 
   let username = null
-  let userRole = 'user'
-  
   for (const [user, token] of Object.entries(accessTokens)) {
     if (token === accessToken) {
       username = user
-      
-      if (validUsers[user]) {
-        userRole = validUsers[user].role
-      } else {
-        let foundUser = null
-        userStore.forEach((u, id) => {
-          if (u.username === user) {
-            foundUser = u
-          }
-        })
-        if (foundUser) {
-          userRole = foundUser.role
-        }
-      }
       break
     }
   }
@@ -234,15 +143,13 @@ app.post('/userInfo', (req, res) => {
     return res.status(401).json({ code: 401, msg: '无效的token' })
   }
 
-  const permissions = rolePermissions[userRole] || rolePermissions.user
-
   res.json({
     code: 200,
     msg: 'success',
     data: {
       username,
-      roles: [userRole],
-      permissions: permissions,
+      roles: [username === 'admin' ? 'admin' : 'editor'],
+      permissions: ['admin', 'editor'],
       avatar: 'https://p3-passport.byteimg.com/img/mosaic-legacy/3791/2341680814601~100x100.awebp'
     }
   })
@@ -270,89 +177,6 @@ app.get('/publicKey', (req, res) => {
 
 app.post('/logout', (req, res) => {
   res.json({ code: 200, msg: 'success' })
-})
-
-const roleStore = new Map([
-  ['admin', { id: 'admin', permission: 'admin', description: '超级管理员' }],
-  ['editor', { id: 'editor', permission: 'editor', description: '编辑者' }],
-  ['user', { id: 'user', permission: 'user', description: '普通用户' }],
-])
-
-app.post('/roleManagement/getList', (req, res) => {
-  try {
-    const { pageNo = 1, pageSize = 10, permission = '' } = req.body
-    let roles = Array.from(roleStore.values())
-    
-    if (permission) {
-      roles = roles.filter(r => r.permission.includes(permission))
-    }
-    
-    const totalCount = roles.length
-    const start = (pageNo - 1) * pageSize
-    const end = start + pageSize
-    const data = roles.slice(start, end)
-    
-    res.json({
-      code: 200,
-      success: true,
-      msg: 'success',
-      data,
-      totalCount,
-    })
-  } catch (error) {
-    console.error('[ROLE] Error listing roles:', error)
-    res.status(500).json({ code: 500, success: false, msg: 'Failed to list roles' })
-  }
-})
-
-app.post('/roleManagement/doEdit', (req, res) => {
-  try {
-    const { id, permission } = req.body
-    
-    if (!permission) {
-      return res.status(400).json({ code: 500, success: false, msg: '权限码不能为空' })
-    }
-    
-    if (id) {
-      const existingRole = roleStore.get(id)
-      if (existingRole) {
-        roleStore.set(id, { ...existingRole, permission })
-        res.json({ code: 200, success: true, msg: '修改成功' })
-      } else {
-        res.status(404).json({ code: 500, success: false, msg: '角色不存在' })
-      }
-    } else {
-      const newId = 'role_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-      roleStore.set(newId, { id: newId, permission, description: permission })
-      res.json({ code: 200, success: true, msg: '添加成功' })
-    }
-  } catch (error) {
-    console.error('[ROLE] Error editing role:', error)
-    res.status(500).json({ code: 500, success: false, msg: 'Failed to edit role' })
-  }
-})
-
-app.post('/roleManagement/doDelete', (req, res) => {
-  try {
-    const { ids } = req.body
-    
-    if (!ids) {
-      return res.status(400).json({ code: 500, success: false, msg: '请选择要删除的角色' })
-    }
-    
-    const idList = typeof ids === 'string' ? ids.split(',') : [ids]
-    
-    idList.forEach(id => {
-      if (id !== 'admin') {
-        roleStore.delete(id)
-      }
-    })
-    
-    res.json({ code: 200, success: true, msg: '删除成功' })
-  } catch (error) {
-    console.error('[ROLE] Error deleting role:', error)
-    res.status(500).json({ code: 500, success: false, msg: 'Failed to delete role' })
-  }
 })
 
 const activeProxies = new Map()
@@ -384,14 +208,9 @@ function formatDuration(seconds) {
   return secs + '秒'
 }
 
-function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '', imageId = '') {
+function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '') {
   const token = generateToken()
   const expireTime = Date.now() + expireMinutes * 60 * 1000
-  
-  let resolvedImageBase64 = imageBase64
-  if (!resolvedImageBase64 && imageId) {
-    resolvedImageBase64 = getImage(imageId)
-  }
 
   tokenManager.addToken(token, {
     phone,
@@ -400,7 +219,7 @@ function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '', ima
     createdAt: Date.now(),
     captchaCode: '',
     captchaTime: '',
-    imageBase64: resolvedImageBase64
+    imageBase64
   })
 
   const proxyPath = `/proxy/${token}`
@@ -413,14 +232,14 @@ function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '', ima
     path: proxyPath,
     captchaCode: '',
     captchaTime: '',
-    imageBase64: resolvedImageBase64
+    imageBase64
   })
 
   console.log(`[PROXY] Created proxy token: ${token}`)
   console.log(`[PROXY] Phone: ${phone || 'N/A'}`)
   console.log(`[PROXY] Target: ${targetUrl}`)
   console.log(`[PROXY] Expires at: ${formatExpiredDate(expireTime)}`)
-  console.log(`[PROXY] Has image: ${!!resolvedImageBase64}`)
+  console.log(`[PROXY] Has image: ${!!imageBase64}`)
 
   return {
     token,
@@ -431,7 +250,7 @@ function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '', ima
     expiredDate: formatExpiredDate(expireTime),
     captchaCode: '',
     captchaTime: '',
-    imageBase64: resolvedImageBase64
+    imageBase64
   }
 }
 
@@ -450,7 +269,7 @@ setInterval(cleanupExpiredProxies, 60000)
 
 app.post('/api/proxy/create', (req, res) => {
   try {
-    const { phone, targetUrl, expireMinutes = 60, imageBase64 = '', imageId = '' } = req.body
+    const { phone, targetUrl, expireMinutes = 60, imageBase64 = '' } = req.body
 
     if (!targetUrl) {
       return res.status(400).json({ code: 400, success: false, msg: 'Target URL is required' })
@@ -463,7 +282,7 @@ app.post('/api/proxy/create', (req, res) => {
     }
 
     const expireMinutesNum = Math.min(Math.max(parseInt(expireMinutes) || 60, 1), 10080)
-    const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64, imageId)
+    const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64)
 
     res.json({
       code: 200,
@@ -510,7 +329,7 @@ app.get('/api/proxy/list', (req, res) => {
 
 app.post('/api/proxy/batch-create', (req, res) => {
   try {
-    const { items, imageId = '' } = req.body
+    const { items } = req.body
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({ code: 400, success: false, msg: 'Items array is required' })
@@ -536,10 +355,9 @@ app.post('/api/proxy/batch-create', (req, res) => {
       }
 
       const expireMinutesNum = Math.min(Math.max(parseInt(expireMinutes) || 60, 1), 10080)
-      const itemImageId = imageBase64 ? '' : imageId
       
       try {
-        const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64, itemImageId)
+        const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64)
         results.push(result)
       } catch (error) {
         errors.push({ index: i, phone, error: 'Failed to create proxy' })
@@ -1186,7 +1004,7 @@ app.get('/proxy/:token', (req, res) => {
 
     <div class="image-guide-section">
       <div class="image-wrapper">
-        <div class="image-label">图片显示</div>
+        <div class="image-label">演示示例说明</div>
         <div class="image-container">
           ${proxyData.imageBase64 ? `<img src="${proxyData.imageBase64}" alt="图片" class="display-image" onclick="zoomImage(this)" />` : '<div class="no-image">暂无图片</div>'}
         </div>
@@ -1196,7 +1014,7 @@ app.get('/proxy/:token', (req, res) => {
         <div class="guide-title">如何使用</div>
         <div class="guide-content">
           <div class="guide-step">1. 打开应用（腾讯视频APP）→ 手机号登陆</div>
-          <div class="guide-step">2. 将+86改成【澳大利亚+61】，粘贴手机号获取</div>
+          <div class="guide-step">2. 将+86改成【美国+1】，粘贴手机号获取</div>
           <div class="guide-step">3. 返回本页面获取验证码</div>
           <div class="guide-step">4. 复制验证码到软件内登录即可</div>
         </div>
@@ -1485,7 +1303,7 @@ app.post('/api/user/create', (req, res) => {
     const newUser = {
       id: userId,
       username,
-      password: hashPassword(password),
+      password,
       nickname,
       role,
       status: 'active',
