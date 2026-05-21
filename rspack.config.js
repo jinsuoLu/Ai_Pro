@@ -277,7 +277,7 @@ module.exports = {
     proxy: [
       {
         context: ['/api', '/publicKey', '/login', '/userInfo', '/logout', '/proxy'],
-        target: 'http://localhost:3001',
+        target: 'https://ai-pro-9ceb.onrender.com',
         changeOrigin: true,
         secure: false,
         logLevel: 'debug',
