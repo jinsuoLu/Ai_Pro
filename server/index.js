@@ -31,7 +31,7 @@ const app = express()
 const PORT = process.env.PROXY_PORT || 3001
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '50mb' }))
 
 const accessTokens = {
   admin: 'admin-accessToken',
@@ -266,6 +266,31 @@ function cleanupExpiredProxies() {
 }
 
 setInterval(cleanupExpiredProxies, 60000)
+
+app.post('/api/image/upload', (req, res) => {
+  try {
+    const { imageBase64 } = req.body
+
+    if (!imageBase64) {
+      return res.status(400).json({ code: 400, success: false, msg: 'Image data is required' })
+    }
+
+    const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
+    
+    res.json({
+      code: 200,
+      success: true,
+      msg: 'success',
+      data: {
+        imageId,
+        imageBase64
+      }
+    })
+  } catch (error) {
+    console.error('[IMAGE] Error uploading image:', error)
+    res.status(500).json({ code: 500, success: false, msg: 'Failed to upload image' })
+  }
+})
 
 app.post('/api/proxy/create', (req, res) => {
   try {
