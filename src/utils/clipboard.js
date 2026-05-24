@@ -10,7 +10,6 @@ function clipboardError() {
 }
 
 /**
- * @author https://github.com/zxwk1998/vue-admin-better （不想保留author可删除）
  * @description 复制数据
  * @param text
  * @param event

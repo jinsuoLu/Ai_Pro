@@ -1,5 +1,4 @@
 /**
- * @author https://vuejs-core.cn （不想保留author可删除）
  * @description 代码规范
  */
 

@@ -33,7 +33,15 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="修改时间" prop="datatime" show-overflow-tooltip />
+      <el-table-column label="角色" prop="role" show-overflow-tooltip>
+        <template #default="{ row }">
+          <el-tag :type="row.role === 'admin' ? 'danger' : row.role === 'editor' ? 'warning' : 'info'">
+            {{ row.role === 'admin' ? '管理员' : row.role === 'editor' ? '编辑员' : '普通用户' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+
+      <el-table-column label="创建时间" prop="createdAt" show-overflow-tooltip />
       <el-table-column label="操作" show-overflow-tooltip width="200">
         <template #default="{ row }">
           <el-button type="text" @click="handleEdit(row)">编辑</el-button>
@@ -102,16 +110,21 @@
       handleDelete(row) {
         if (row.id) {
           this.$baseConfirm('你确定要删除当前项吗', null, async () => {
-            const { msg } = await doDelete({ ids: row.id })
-            this.$baseMessage(msg, 'success')
-            this.fetchData()
+            const res = await doDelete({ id: row.id })
+            if (res.success) {
+              this.$baseMessage(res.msg, 'success')
+              this.fetchData()
+            } else {
+              this.$baseMessage(res.msg, 'error')
+            }
           })
         } else {
           if (this.selectRows.length > 0) {
-            const ids = this.selectRows.map((item) => item.id).join()
             this.$baseConfirm('你确定要删除选中项吗', null, async () => {
-              const { msg } = await doDelete({ ids })
-              this.$baseMessage(msg, 'success')
+              for (const item of this.selectRows) {
+                await doDelete({ id: item.id })
+              }
+              this.$baseMessage('删除成功', 'success')
               this.fetchData()
             })
           } else {
@@ -134,9 +147,14 @@
       },
       async fetchData() {
         this.listLoading = true
-        const { data, totalCount } = await getList(this.queryForm)
-        this.list = data
-        this.total = totalCount
+        const res = await getList(this.queryForm)
+        if (res.success) {
+          this.list = res.data
+          this.total = res.data.length
+        } else {
+          this.list = []
+          this.total = 0
+        }
         this.timeOutID = setTimeout(() => {
           this.listLoading = false
         }, 300)

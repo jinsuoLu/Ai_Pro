@@ -1,0 +1,26 @@
+database:
+  engine: sql
+  databaseName: app_db
+  ipAllowList: []
+
+cronjobs: []
+
+services:
+  - name: vue-admin-better
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm install && npm install --prefix server && npm run build
+    startCommand: node server/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        fromService: {name: vue-admin-better, envVarKey: PORT}
+      - key: PROXY_PORT
+        fromService: {name: vue-admin-better, envVarKey: PORT}
+      - key: DATABASE_PATH
+        fromDatabase:
+          name: app_db
+          property: connectionString

@@ -140,7 +140,12 @@
     <el-dialog title="新增授权API" :visible.sync="addDialogVisible" width="500px">
       <el-form ref="addForm" :model="addForm" :rules="addRules" label-width="100px">
         <el-form-item label="手机号" prop="phone">
-          <el-input v-model="addForm.phone" placeholder="请输入手机号" />
+          <el-input 
+            v-model="addForm.phone" 
+            placeholder="请输入手机号"
+            type="number"
+            @input="handlePhoneInput"
+          />
         </el-form-item>
         <el-form-item label="API连接" prop="apiUrl">
           <el-input v-model="addForm.apiUrl" placeholder="请输入API目标URL" />
@@ -245,7 +250,7 @@
 
 <script>
 import VabPageHeader from '@/components/VabPageHeader'
-import { createProxy, listProxies, deleteProxy, refreshCaptcha, getProxyUrl, batchCreateProxy, uploadImage } from '@/api/proxy'
+import { createProxy, listProxies, deleteProxy, refreshCaptcha, getProxyUrl as getApiProxyUrl, batchCreateProxy, uploadImage } from '@/api/proxy'
 
 export default {
   name: 'ApiAuthorization',
@@ -286,7 +291,7 @@ export default {
       addRules: {
         phone: [
           { required: true, message: '请输入手机号', trigger: 'blur' },
-          { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的手机号', trigger: 'blur' },
+          { pattern: /^\d+$/, message: '手机号只能为数字', trigger: 'blur' },
         ],
         apiUrl: [
           { required: true, message: '请输入API连接URL', trigger: 'blur' },
@@ -338,12 +343,22 @@ export default {
     },
   },
   methods: {
+    handlePhoneInput(value) {
+      // 只允许数字
+      this.addForm.phone = value.replace(/[^\d]/g, '')
+    },
     async loadProxies() {
       this.tableLoading = true
       try {
         const res = await listProxies()
-        if (res.success) {
-          this.proxyList = res.data.map(item => ({
+        console.log('[DEBUG] loadProxies res:', res)
+        if (res && (res.success || res.code === 200)) {
+          let data = res.data || []
+          // 确保 data 是数组
+          if (!Array.isArray(data)) {
+            data = []
+          }
+          this.proxyList = data.map(item => ({
             ...item,
             remainingTime: this.calculateRemainingTime(item.expireTime),
             isExpired: item.expireTime <= Date.now(),
@@ -351,6 +366,7 @@ export default {
           this.total = this.proxyList.length
         }
       } catch (error) {
+        console.error('[DEBUG] loadProxies error:', error)
         this.$message.error('加载授权API列表失败')
       } finally {
         this.tableLoading = false
@@ -396,7 +412,7 @@ export default {
       return 'success'
     },
     getProxyUrl(token) {
-      return getProxyUrl(token)
+      return getApiProxyUrl(token)
     },
     handleAdd() {
       this.addForm = {
@@ -520,15 +536,39 @@ export default {
         this.$message.error('刷新验证码失败')
       }
     },
-    copyCaptcha(row) {
-      this.$copyText(row.captchaCode).then(() => {
+    async copyCaptcha(row) {
+      try {
+        await navigator.clipboard.writeText(row.captchaCode)
         this.$message.success('验证码已复制')
-      })
+      } catch (error) {
+        // 降级方案：使用传统方式复制
+        this.legacyCopy(row.captchaCode)
+      }
     },
-    copyUrl(row) {
-      this.$copyText(this.getProxyUrl(row.token)).then(() => {
+    async copyUrl(row) {
+      try {
+        await navigator.clipboard.writeText(this.getProxyUrl(row.token))
         this.$message.success('链接已复制')
-      })
+      } catch (error) {
+        // 降级方案：使用传统方式复制
+        this.legacyCopy(this.getProxyUrl(row.token))
+      }
+    },
+    legacyCopy(text) {
+      const input = document.createElement('input')
+      input.value = text
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      try {
+        document.execCommand('copy')
+        this.$message.success('已复制')
+      } catch (error) {
+        this.$message.error('复制失败，请手动复制')
+      } finally {
+        document.body.removeChild(input)
+      }
     },
     handleSearch() {
       this.searchForm.pageNo = 1

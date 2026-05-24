@@ -2,9 +2,14 @@ const express = require('express')
 const cors = require('cors')
 const { createProxyMiddleware } = require('http-proxy-middleware')
 const crypto = require('crypto')
+const path = require('path')
+const fs = require('fs')
+const UserModel = require('./models/user')
+const ProxyModel = require('./models/proxy')
+const { tokenManager } = require('./tokenManager')
 
 const privateKey = `-----BEGIN RSA PRIVATE KEY-----
-MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAMFPa+v52FkSUXvcUnrGI/XzW3EpZRI0s9BCWJ3oNQmEYA5luWW5p8h0uadTIoTyYweFPdH4hveyxlwmS7oefvbIdiP+o+QIYW/R4Wjsb4Yl8MhR4PJqUE3RCy6IT9fM8ckG4kN9ECs6Ja8fQFc6/mSl5dJczzJO3k1rWMBhKJD/AgMBAAECgYEAucMakH9dWeryhrYoRHcXo4giPVJsH9ypVt4KzmOQY/7jV7KFQK3x//27UoHfUCak51sxFw9ek7UmTPM4HjikA9LkYeE7S381b4QRvFuf3L6IbMP3ywJnJ8pPr2l5SqQ00W+oKv+w/VmEsyUHr+k4Z+4ik+FheTkVWp566WbqFsECQQDjYaMcaKw3j2Zecl8T6eUe7fdaRMIzp/gcpPMfT/9rDzIQk+7ORvm1NI9AUmFv/FAlfpuAMrdL2n7p9uznWb7RAkEA2aP934kbXg5bdV0R313MrL+7WTK/qdcYxATUbMsMuWWQBoS5irrt80WCZbG48hpocJavLNjbtrjmUX3CuJBmzwJAOJg8uP10n/+ZQzjEYXh+BszEHDuw+pp8LuT/fnOy5zrJA0dO0RjpXijO3vuiNPVgHXT9z1LQPJkNrb5ACPVVgQJBALPeb4uV0bNrJDUb5RB4ghZnIxv18CcaqNIft7vuGCcFBAIPIRTBprR+RuVq+xHDt3sNXdsvom4h49+Hky1b0ksCQBBwUtVaqH6ztCtwUF1j2c/Zcrt5P/uN7IHAd44K0gIJc1+Csr3qPG+G2yoqRM8KVqLI8Z2ZYn9c+AvEE+L9OQY=
+MIICdwIBADANBgkqhkiG9w0BAQEFAASCAmEwggJdAgEAAoGBAMFPa+v52FkSUXvcUnrGI/XzW3EpZRI0s9BCWJ3oNQmEYA5lbWW5p8h0uadTIoTyYweFPdH4hveyxlwmS7oefvbIdiP+o+QIYW/R4WjsG4Yl8MhR4PJqUE3RCy6IT9fM8ckG4kN9ECs6Ja8fQFc6/mSl5dJczzJO3k1rWMBhKJD/wIDAQAB
 -----END RSA PRIVATE KEY-----`
 
 function decryptRSA(encryptedData) {
@@ -23,14 +28,22 @@ function decryptRSA(encryptedData) {
     return null
   }
 }
-const { tokenManager } = require('./tokenManager')
-const { timeLimitService } = require('./timeLimitService')
-const path = require('path')
 
 const app = express()
 const PORT = process.env.PROXY_PORT || 3001
 
-app.use(cors())
+const isProduction = process.env.NODE_ENV === 'production'
+const corsOptions = isProduction ? {
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Token', 'accessToken', 'AccessToken']
+} : {
+  origin: ['http://localhost:8090', 'http://127.0.0.1:8090'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Token', 'accessToken', 'AccessToken']
+}
+app.use(cors(corsOptions))
 app.use(express.json({ limit: '50mb' }))
 
 const accessTokens = {
@@ -39,34 +52,63 @@ const accessTokens = {
   test: 'test-accessToken'
 }
 
-const validUsers = {
-  admin: { password: '123456', role: 'admin' },
-  editor: { password: '123456', role: 'editor' },
-  test: { password: '123456', role: 'test' }
-}
-
-const userStore = new Map()
-const userProxyMap = new Map()
-const imageStore = new Map()
-
-function initUsers() {
-  userStore.set('admin', {
-    id: 'admin',
-    username: 'admin',
-    password: '123456',
-    nickname: '管理员',
-    role: 'admin',
-    status: 'active',
-    createdAt: Date.now(),
+function initAccessTokens() {
+  const users = UserModel.getAll()
+  users.forEach(user => {
+    if (!accessTokens[user.username]) {
+      accessTokens[user.username] = `user-accessToken-${user.username}-${Date.now()}`
+    }
   })
-  userProxyMap.set('admin', [])
 }
 
-initUsers()
+initAccessTokens()
+
+const imageStore = new Map()
 
 function generateUserId() {
   return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
 }
+
+function generateToken() {
+  return 'tk_' + Math.random().toString(36).substr(2, 16) + Date.now().toString(36)
+}
+
+function formatExpiredDate(expireTime) {
+  const d = new Date(expireTime)
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0') + ' ' +
+    String(d.getHours()).padStart(2, '0') + ':' +
+    String(d.getMinutes()).padStart(2, '0') + ':' +
+    String(d.getSeconds()).padStart(2, '0')
+}
+
+function formatDuration(seconds) {
+  if (seconds <= 0) return '已过期'
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const secs = seconds % 60
+
+  if (days > 0) return days + '天 ' + hours + '小时 ' + minutes + '分'
+  if (hours > 0) return hours + '小时 ' + minutes + '分 ' + secs + '秒'
+  if (minutes > 0) return minutes + '分 ' + secs + '秒'
+  return secs + '秒'
+}
+
+function cleanupExpiredProxies() {
+  const now = Date.now()
+  const allProxies = ProxyModel.getAll()
+
+  allProxies.forEach(proxy => {
+    if (proxy.expire_time <= now && proxy.status === 'active') {
+      ProxyModel.markAsExpired(proxy.token)
+    }
+  })
+}
+
+setInterval(cleanupExpiredProxies, 60000)
+cleanupExpiredProxies()
 
 app.post('/login', (req, res) => {
   let { username, password } = req.body
@@ -91,25 +133,10 @@ app.post('/login', (req, res) => {
     return res.status(400).json({ code: 500, msg: '用户名和密码不能为空' })
   }
 
-  let user = validUsers[username]
-  let userId = null
-  
+  let user = UserModel.getByUsername(username)
+
   if (!user || user.password !== password) {
-    user = userStore.get(username)
-    if (user) {
-      userId = username
-    } else {
-      userStore.forEach((u, id) => {
-        if (u.username === username && u.password === password) {
-          user = u
-          userId = id
-        }
-      })
-    }
-    
-    if (!user || user.password !== password) {
-      return res.status(401).json({ code: 500, msg: '帐户或密码不正确' })
-    }
+    return res.status(401).json({ code: 500, msg: '帐户或密码不正确' })
   }
 
   let accessToken = accessTokens[username]
@@ -144,13 +171,18 @@ app.post('/userInfo', (req, res) => {
     return res.status(401).json({ code: 401, msg: '无效的token' })
   }
 
+  const user = UserModel.getByUsername(username)
+  if (!user) {
+    return res.status(401).json({ code: 401, msg: '用户不存在' })
+  }
+
   res.json({
     code: 200,
     msg: 'success',
     data: {
-      username,
-      roles: [username === 'admin' ? 'admin' : 'editor'],
-      permissions: ['admin', 'editor'],
+      username: user.username,
+      roles: [user.role],
+      permissions: JSON.parse(user.permissions || '[]'),
       avatar: 'https://p3-passport.byteimg.com/img/mosaic-legacy/3791/2341680814601~100x100.awebp'
     }
   })
@@ -180,94 +212,6 @@ app.post('/logout', (req, res) => {
   res.json({ code: 200, msg: 'success' })
 })
 
-const activeProxies = new Map()
-
-function generateToken() {
-  return 'tk_' + Math.random().toString(36).substr(2, 16) + Date.now().toString(36)
-}
-
-function formatExpiredDate(expireTime) {
-  const d = new Date(expireTime)
-  return d.getFullYear() + '-' +
-    String(d.getMonth() + 1).padStart(2, '0') + '-' +
-    String(d.getDate()).padStart(2, '0') + ' ' +
-    String(d.getHours()).padStart(2, '0') + ':' +
-    String(d.getMinutes()).padStart(2, '0') + ':' +
-    String(d.getSeconds()).padStart(2, '0')
-}
-
-function formatDuration(seconds) {
-  if (seconds <= 0) return '已过期'
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const secs = seconds % 60
-  
-  if (days > 0) return days + '天 ' + hours + '小时 ' + minutes + '分'
-  if (hours > 0) return hours + '小时 ' + minutes + '分 ' + secs + '秒'
-  if (minutes > 0) return minutes + '分 ' + secs + '秒'
-  return secs + '秒'
-}
-
-function createProxyToken(phone, targetUrl, expireMinutes, imageBase64 = '') {
-  const token = generateToken()
-  const expireTime = Date.now() + expireMinutes * 60 * 1000
-
-  tokenManager.addToken(token, {
-    phone,
-    targetUrl,
-    expireTime,
-    createdAt: Date.now(),
-    captchaCode: '',
-    captchaTime: '',
-    imageBase64
-  })
-
-  const proxyPath = `/proxy/${token}`
-  const proxyUrl = `http://localhost:${PORT}${proxyPath}`
-
-  activeProxies.set(token, {
-    phone,
-    targetUrl,
-    expireTime,
-    path: proxyPath,
-    captchaCode: '',
-    captchaTime: '',
-    imageBase64
-  })
-
-  console.log(`[PROXY] Created proxy token: ${token}`)
-  console.log(`[PROXY] Phone: ${phone || 'N/A'}`)
-  console.log(`[PROXY] Target: ${targetUrl}`)
-  console.log(`[PROXY] Expires at: ${formatExpiredDate(expireTime)}`)
-  console.log(`[PROXY] Has image: ${!!imageBase64}`)
-
-  return {
-    token,
-    phone,
-    proxyUrl,
-    expireTime,
-    expireMinutes,
-    expiredDate: formatExpiredDate(expireTime),
-    captchaCode: '',
-    captchaTime: '',
-    imageBase64
-  }
-}
-
-function cleanupExpiredProxies() {
-  const now = Date.now()
-  for (const [token, data] of activeProxies.entries()) {
-    if (data.expireTime <= now) {
-      activeProxies.delete(token)
-      tokenManager.removeToken(token)
-      console.log(`[PROXY] Cleaned up expired token: ${token}`)
-    }
-  }
-}
-
-setInterval(cleanupExpiredProxies, 60000)
-
 app.post('/api/image/upload', (req, res) => {
   try {
     const { imageBase64 } = req.body
@@ -277,16 +221,14 @@ app.post('/api/image/upload', (req, res) => {
     }
 
     const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9)
-    
+
     imageStore.set(imageId, imageBase64)
-    
+
     res.json({
       code: 200,
       success: true,
       msg: 'success',
-      data: {
-        imageId
-      }
+      data: { imageId }
     })
   } catch (error) {
     console.error('[IMAGE] Error uploading image:', error)
@@ -296,7 +238,7 @@ app.post('/api/image/upload', (req, res) => {
 
 app.post('/api/proxy/create', (req, res) => {
   try {
-    const { phone, targetUrl, expireMinutes = 60, imageId = '' } = req.body
+    const { phone, targetUrl, expireMinutes = 60, imageId = '', userId } = req.body
 
     if (!targetUrl) {
       return res.status(400).json({ code: 400, success: false, msg: 'Target URL is required' })
@@ -309,19 +251,59 @@ app.post('/api/proxy/create', (req, res) => {
     }
 
     const expireMinutesNum = Math.min(Math.max(parseInt(expireMinutes) || 60, 1), 10080)
-    
+
     let imageBase64 = ''
     if (imageId && imageStore.has(imageId)) {
       imageBase64 = imageStore.get(imageId)
     }
-    
-    const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64)
+
+    const token = generateToken()
+    const expireTime = Date.now() + expireMinutesNum * 60 * 1000
+
+    tokenManager.addToken(token, {
+      phone,
+      targetUrl,
+      expireTime,
+      createdAt: Date.now(),
+      captchaCode: '',
+      captchaTime: '',
+      imageBase64
+    })
+
+    const proxy = ProxyModel.create({
+      token,
+      phone,
+      targetUrl,
+      expireTime,
+      captchaCode: '',
+      captchaTime: '',
+      imageBase64,
+      userId
+    })
+
+    const proxyPath = `/proxy/${token}`
+    const proxyUrl = `http://localhost:${PORT}${proxyPath}`
+
+    console.log(`[PROXY] Created proxy token: ${token}`)
+    console.log(`[PROXY] Phone: ${phone || 'N/A'}`)
+    console.log(`[PROXY] Target: ${targetUrl}`)
+    console.log(`[PROXY] Expires at: ${formatExpiredDate(expireTime)}`)
 
     res.json({
       code: 200,
       success: true,
       msg: 'success',
-      data: result
+      data: {
+        token,
+        phone,
+        proxyUrl,
+        expireTime,
+        expireMinutes: expireMinutesNum,
+        expiredDate: formatExpiredDate(expireTime),
+        captchaCode: '',
+        captchaTime: '',
+        imageBase64
+      }
     })
   } catch (error) {
     console.error('[PROXY] Error creating proxy:', error)
@@ -332,21 +314,20 @@ app.post('/api/proxy/create', (req, res) => {
 app.get('/api/proxy/list', (req, res) => {
   try {
     const now = Date.now()
-    const proxies = []
-
-    for (const [token, data] of activeProxies.entries()) {
-      proxies.push({
-        token,
-        phone: data.phone || '',
-        apiUrl: data.targetUrl,
-        expireTime: data.expireTime,
-        expiredDate: formatExpiredDate(data.expireTime),
-        remainingTime: Math.max(0, data.expireTime - now),
-        isExpired: data.expireTime <= now,
-        captchaCode: data.captchaCode || '',
-        captchaTime: data.captchaTime || ''
-      })
-    }
+    const allProxies = ProxyModel.getAll()
+    const proxies = allProxies.map(proxy => ({
+      token: proxy.token,
+      phone: proxy.phone || '',
+      apiUrl: proxy.target_url,
+      expireTime: proxy.expire_time,
+      expiredDate: formatExpiredDate(proxy.expire_time),
+      remainingTime: Math.max(0, proxy.expire_time - now),
+      isExpired: proxy.expire_time <= now,
+      captchaCode: proxy.captcha_code || '',
+      captchaTime: proxy.captcha_time || '',
+      status: proxy.status,
+      userId: proxy.user_id
+    }))
 
     res.json({
       code: 200,
@@ -362,7 +343,7 @@ app.get('/api/proxy/list', (req, res) => {
 
 app.post('/api/proxy/batch-create', (req, res) => {
   try {
-    const { items, imageId = '' } = req.body
+    const { items, imageId = '', userId } = req.body
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({ code: 400, success: false, msg: 'Items array is required' })
@@ -393,10 +374,45 @@ app.post('/api/proxy/batch-create', (req, res) => {
       }
 
       const expireMinutesNum = Math.min(Math.max(parseInt(expireMinutes) || 60, 1), 10080)
-      
+
       try {
-        const result = createProxyToken(phone, targetUrl, expireMinutesNum, imageBase64)
-        results.push(result)
+        const token = generateToken()
+        const expireTime = Date.now() + expireMinutesNum * 60 * 1000
+
+        tokenManager.addToken(token, {
+          phone,
+          targetUrl,
+          expireTime,
+          createdAt: Date.now(),
+          captchaCode: '',
+          captchaTime: '',
+          imageBase64
+        })
+
+        const proxy = ProxyModel.create({
+          token,
+          phone,
+          targetUrl,
+          expireTime,
+          captchaCode: '',
+          captchaTime: '',
+          imageBase64,
+          userId
+        })
+
+        const proxyUrl = `http://localhost:${PORT}/proxy/${token}`
+
+        results.push({
+          token,
+          phone,
+          proxyUrl,
+          expireTime,
+          expireMinutes: expireMinutesNum,
+          expiredDate: formatExpiredDate(expireTime),
+          captchaCode: '',
+          captchaTime: '',
+          imageBase64
+        })
       } catch (error) {
         errors.push({ index: i, phone, error: 'Failed to create proxy' })
       }
@@ -427,13 +443,11 @@ app.post('/api/proxy/extend', (req, res) => {
       return res.status(400).json({ code: 400, success: false, msg: 'Token and additionalMinutes are required' })
     }
 
-    const success = tokenManager.extendToken(token, parseInt(additionalMinutes))
+    const additionalTime = parseInt(additionalMinutes) * 60 * 1000
+    const success = tokenManager.extendToken(token, additionalTime)
 
     if (success) {
-      const tokenData = tokenManager.getToken(token)
-      if (tokenData && activeProxies.has(token)) {
-        activeProxies.get(token).expireTime = tokenData.expireTime
-      }
+      ProxyModel.extend(token, additionalTime)
     }
 
     res.json({ code: 200, success, msg: success ? 'success' : 'Failed to extend' })
@@ -446,10 +460,14 @@ app.post('/api/proxy/extend', (req, res) => {
 app.delete('/api/proxy/:token', (req, res) => {
   try {
     const { token } = req.params
-    const existed = activeProxies.delete(token)
-    tokenManager.removeToken(token)
+    const existed = ProxyModel.getByToken(token)
 
-    res.json({ code: 200, success: true, deleted: existed, msg: 'success' })
+    if (existed) {
+      ProxyModel.delete(token)
+      tokenManager.removeToken(token)
+    }
+
+    res.json({ code: 200, success: true, deleted: !!existed, msg: 'success' })
   } catch (error) {
     console.error('[PROXY] Error deleting proxy:', error)
     res.status(500).json({ code: 500, success: false, msg: 'Failed to delete proxy' })
@@ -460,19 +478,22 @@ app.post('/api/proxy/refresh-captcha', (req, res) => {
   try {
     const { token } = req.body
 
-    if (!token || !activeProxies.has(token)) {
+    if (!token) {
       return res.status(400).json({ code: 400, success: false, msg: 'Invalid token' })
     }
 
-    const proxyData = activeProxies.get(token)
+    const proxy = ProxyModel.getByToken(token)
 
-    if (proxyData.expireTime <= Date.now()) {
-      activeProxies.delete(token)
-      tokenManager.removeToken(token)
+    if (!proxy) {
+      return res.status(400).json({ code: 400, success: false, msg: 'Token not found' })
+    }
+
+    if (proxy.expire_time <= Date.now()) {
+      ProxyModel.markAsExpired(token)
       return res.status(400).json({ code: 400, success: false, msg: 'Token expired' })
     }
 
-    const targetUrl = proxyData.targetUrl
+    const targetUrl = proxy.target_url
     const https = targetUrl.startsWith('https://') ? require('https') : require('http')
 
     const options = new URL(targetUrl)
@@ -494,30 +515,54 @@ app.post('/api/proxy/refresh-captcha', (req, res) => {
               if (match) {
                 code = match[1]
               }
-              proxyData.captchaCode = code
-              proxyData.captchaTime = parsed.data.code_time || formatExpiredDate(Date.now())
-              activeProxies.set(token, proxyData)
 
-              const tokenData = tokenManager.getToken(token)
-              if (tokenData) {
-                tokenData.captchaCode = proxyData.captchaCode
-                tokenData.captchaTime = proxyData.captchaTime
+              const captchaTime = parsed.data.code_time || formatExpiredDate(Date.now())
+
+              ProxyModel.update(token, {
+                captchaCode: code,
+                captchaTime: captchaTime
+              })
+
+              res.json({
+                code: 200,
+                success: true,
+                msg: 'success',
+                data: {
+                  token,
+                  proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
+                  expiredDate: formatExpiredDate(proxy.expire_time),
+                  code: code,
+                  code_time: captchaTime
+                }
+              })
+            } else {
+              res.json({
+                code: 200,
+                success: true,
+                msg: 'success',
+                data: {
+                  token,
+                  proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
+                  expiredDate: formatExpiredDate(proxy.expire_time),
+                  code: proxy.captcha_code || '',
+                  code_time: proxy.captcha_time || ''
+                }
+              })
+            }
+          } else {
+            res.json({
+              code: 200,
+              success: true,
+              msg: 'success',
+              data: {
+                token,
+                proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
+                expiredDate: formatExpiredDate(proxy.expire_time),
+                code: proxy.captcha_code || '',
+                code_time: proxy.captcha_time || ''
               }
-            }
+            })
           }
-
-          res.json({
-            code: 200,
-            success: true,
-            msg: 'success',
-            data: {
-              token,
-              proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
-              expiredDate: formatExpiredDate(proxyData.expireTime),
-              code: proxyData.captchaCode || '',
-              code_time: proxyData.captchaTime || ''
-            }
-          })
         } catch (e) {
           console.error('[PROXY] Error parsing response:', e)
           res.json({
@@ -527,9 +572,9 @@ app.post('/api/proxy/refresh-captcha', (req, res) => {
             data: {
               token,
               proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
-              expiredDate: formatExpiredDate(proxyData.expireTime),
-              code: proxyData.captchaCode || '',
-              code_time: proxyData.captchaTime || ''
+              expiredDate: formatExpiredDate(proxy.expire_time),
+              code: proxy.captcha_code || '',
+              code_time: proxy.captcha_time || ''
             }
           })
         }
@@ -545,9 +590,9 @@ app.post('/api/proxy/refresh-captcha', (req, res) => {
         data: {
           token,
           proxyUrl: `http://localhost:${PORT}/proxy/${token}`,
-          expiredDate: formatExpiredDate(proxyData.expireTime),
-          code: proxyData.captchaCode || '',
-          code_time: proxyData.captchaTime || ''
+          expiredDate: formatExpiredDate(proxy.expire_time),
+          code: proxy.captcha_code || '',
+          code_time: proxy.captcha_time || ''
         }
       })
     })
@@ -562,7 +607,9 @@ app.post('/api/proxy/refresh-captcha', (req, res) => {
 app.get('/proxy/:token', (req, res) => {
   const { token } = req.params
 
-  if (!activeProxies.has(token)) {
+  const proxy = ProxyModel.getByToken(token)
+
+  if (!proxy) {
     return res.json({
       code: 0,
       msg: '',
@@ -574,11 +621,8 @@ app.get('/proxy/:token', (req, res) => {
     })
   }
 
-  const proxyData = activeProxies.get(token)
-
-  if (proxyData.expireTime <= Date.now()) {
-    activeProxies.delete(token)
-    tokenManager.removeToken(token)
+  if (proxy.expire_time <= Date.now()) {
+    ProxyModel.markAsExpired(token)
     return res.json({
       code: 0,
       msg: '',
@@ -590,8 +634,8 @@ app.get('/proxy/:token', (req, res) => {
     })
   }
 
-  const remainingSeconds = Math.max(0, Math.floor((proxyData.expireTime - Date.now()) / 1000))
-  
+  const remainingSeconds = Math.max(0, Math.floor((proxy.expire_time - Date.now()) / 1000))
+
   const html = `
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -600,11 +644,7 @@ app.get('/proxy/:token', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>授权API - 验证码获取</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans SC', sans-serif;
       background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
@@ -618,10 +658,7 @@ app.get('/proxy/:token', (req, res) => {
     body::before {
       content: '';
       position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
+      top: 0; left: 0; right: 0; bottom: 0;
       background: radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.15) 0%, transparent 50%),
                   radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.1) 0%, transparent 50%);
       pointer-events: none;
@@ -675,11 +712,6 @@ app.get('/proxy/:token', (req, res) => {
       padding: 20px 24px;
       margin-bottom: 20px;
       border: 1px solid rgba(0, 0, 0, 0.05);
-      transition: transform 0.3s ease, box-shadow 0.3s ease;
-    }
-    .info-card:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
     }
     .info-row {
       display: flex;
@@ -701,9 +733,6 @@ app.get('/proxy/:token', (req, res) => {
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
-    .info-value.phone {
-      font-family: 'SF Mono', 'Consolas', monospace;
-    }
     .captcha-section {
       text-align: center;
       padding: 32px 24px;
@@ -713,20 +742,6 @@ app.get('/proxy/:token', (req, res) => {
       position: relative;
       overflow: hidden;
       box-shadow: 0 10px 40px rgba(102, 126, 234, 0.3);
-    }
-    .captcha-section::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: linear-gradient(45deg, transparent 30%, rgba(255,255,255,0.1) 50%, transparent 70%);
-      animation: shine 3s infinite;
-    }
-    @keyframes shine {
-      0% { transform: translateX(-100%); }
-      100% { transform: translateX(100%); }
     }
     .captcha-label {
       color: rgba(255, 255, 255, 0.9);
@@ -744,6 +759,30 @@ app.get('/proxy/:token', (req, res) => {
       letter-spacing: 8px;
       text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
       animation: pulse 2s ease-in-out infinite;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .captcha-code:hover {
+      transform: scale(1.05);
+    }
+    .copy-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      padding: 8px 16px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-top: 12px;
+    }
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+      transform: translateY(-2px);
+    }
+    .copy-btn.copied {
+      background: #28a745;
+      border-color: #28a745;
     }
     @keyframes pulse {
       0%, 100% { transform: scale(1); }
@@ -771,29 +810,11 @@ app.get('/proxy/:token', (req, res) => {
       font-weight: 600;
       cursor: pointer;
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-      position: relative;
-      overflow: hidden;
       box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-    }
-    .refresh-btn::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-      transition: left 0.5s;
-    }
-    .refresh-btn:hover::before {
-      left: 100%;
     }
     .refresh-btn:hover {
       transform: translateY(-3px);
       box-shadow: 0 12px 35px rgba(102, 126, 234, 0.4);
-    }
-    .refresh-btn:active {
-      transform: translateY(-1px);
     }
     .refresh-btn:disabled {
       opacity: 0.7;
@@ -807,7 +828,6 @@ app.get('/proxy/:token', (req, res) => {
       border-radius: 20px;
       padding: 20px;
       margin-top: 20px;
-      box-shadow: 0 10px 40px rgba(102, 126, 234, 0.25);
     }
     .image-wrapper {
       flex: 1;
@@ -821,7 +841,6 @@ app.get('/proxy/:token', (req, res) => {
       margin-bottom: 12px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
     }
     .image-wrapper .image-container {
       width: 100%;
@@ -834,87 +853,16 @@ app.get('/proxy/:token', (req, res) => {
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: all 0.3s ease;
-    }
-    .image-wrapper .image-container:hover {
-      border-color: rgba(255, 255, 255, 0.4);
-      background: rgba(255, 255, 255, 0.15);
     }
     .image-wrapper .display-image {
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
       cursor: pointer;
-      transition: transform 0.3s ease;
-    }
-    .image-wrapper .display-image:hover {
-      transform: scale(1.05);
     }
     .image-wrapper .no-image {
       color: rgba(255, 255, 255, 0.6);
       font-size: 13px;
-      font-weight: 500;
-    }
-    .image-wrapper .image-hint {
-      color: rgba(255, 255, 255, 0.7);
-      font-size: 11px;
-      margin-top: 10px;
-      font-weight: 500;
-    }
-    .image-modal {
-      display: none;
-      position: fixed;
-      z-index: 1000;
-      left: 0;
-      top: 0;
-      width: 100%;
-      height: 100%;
-      background-color: rgba(0, 0, 0, 0.92);
-      backdrop-filter: blur(10px);
-    }
-    .modal-content {
-      margin: auto;
-      display: block;
-      max-width: 90%;
-      max-height: 85%;
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      animation: zoomIn 0.3s ease-out;
-      border-radius: 12px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-    }
-    @keyframes zoomIn {
-      from {
-        opacity: 0;
-        transform: translate(-50%, -50%) scale(0.7);
-      }
-      to {
-        opacity: 1;
-        transform: translate(-50%, -50%) scale(1);
-      }
-    }
-    .modal-close {
-      position: absolute;
-      top: 30px;
-      right: 40px;
-      color: #fff;
-      font-size: 45px;
-      font-weight: 300;
-      cursor: pointer;
-      transition: all 0.3s ease;
-      width: 50px;
-      height: 50px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 50%;
-      background: rgba(255, 255, 255, 0.1);
-    }
-    .modal-close:hover {
-      background: rgba(255, 255, 255, 0.2);
-      transform: rotate(90deg);
     }
     .guide-wrapper {
       flex: 1.5;
@@ -930,25 +878,12 @@ app.get('/proxy/:token', (req, res) => {
       padding-bottom: 10px;
       border-bottom: 2px solid rgba(255, 255, 255, 0.2);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-    .guide-wrapper .guide-content {
-      flex: 1;
     }
     .guide-wrapper .guide-step {
       padding: 8px 0;
       font-size: 12px;
       line-height: 1.6;
       border-bottom: 1px dashed rgba(255, 255, 255, 0.15);
-      font-weight: 500;
-      transition: all 0.2s ease;
-    }
-    .guide-wrapper .guide-step:hover {
-      padding-left: 4px;
-      color: rgba(255, 255, 255, 1);
-    }
-    .guide-wrapper .guide-step:last-child {
-      border-bottom: none;
     }
     .guide-wrapper .guide-note {
       font-size: 11px;
@@ -956,7 +891,6 @@ app.get('/proxy/:token', (req, res) => {
       margin-top: 12px;
       padding-top: 10px;
       border-top: 1px solid rgba(255, 255, 255, 0.15);
-      font-weight: 500;
     }
     .timer-section {
       text-align: center;
@@ -965,14 +899,12 @@ app.get('/proxy/:token', (req, res) => {
       border-radius: 16px;
       border: 1px solid rgba(255, 193, 7, 0.2);
       margin-bottom: 20px;
-      box-shadow: 0 4px 15px rgba(255, 193, 7, 0.1);
     }
     .timer-label {
       color: #856404;
       font-size: 13px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
     }
     .timer-value {
       font-family: 'SF Mono', 'Consolas', monospace;
@@ -981,7 +913,6 @@ app.get('/proxy/:token', (req, res) => {
       background: linear-gradient(135deg, #ff9500, #ff6b00);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      background-clip: text;
       margin-top: 8px;
     }
     .footer {
@@ -989,7 +920,6 @@ app.get('/proxy/:token', (req, res) => {
       margin-top: 24px;
       color: #888;
       font-size: 12px;
-      font-weight: 500;
       padding-top: 20px;
       border-top: 1px solid rgba(0, 0, 0, 0.06);
     }
@@ -1015,61 +945,46 @@ app.get('/proxy/:token', (req, res) => {
       <h1>授权API管理</h1>
       <p>实时获取验证码</p>
     </div>
-
     <div class="info-card">
       <div class="info-row">
         <span class="info-label">手机号</span>
-        <span class="info-value phone">${proxyData.phone || '未绑定'}</span>
+        <span class="info-value">${proxy.phone || '未绑定'}</span>
       </div>
     </div>
-
     <div class="captcha-section">
       <div class="captcha-label">当前验证码</div>
       <div id="captcha-display">
-        ${proxyData.captchaCode ? `<div class="captcha-code">${proxyData.captchaCode}</div>` : '<div class="captcha-empty">暂无验证码</div>'}
+        ${proxy.captcha_code ? `<div class="captcha-code" onclick="copyCaptcha()">${proxy.captcha_code}</div><button class="copy-btn" id="copy-btn" onclick="copyCaptcha()">点击复制验证码</button>` : '<div class="captcha-empty">暂无验证码</div>'}
       </div>
-      ${proxyData.captchaTime ? `<div class="captcha-time">获取时间: ${proxyData.captchaTime}</div>` : ''}
+      ${proxy.captcha_time ? `<div class="captcha-time">获取时间: ${proxy.captcha_time}</div>` : ''}
     </div>
-
     <div class="timer-section">
       <div class="timer-label">剩余有效时间</div>
       <div class="timer-value" id="timer">${formatDuration(remainingSeconds)}</div>
     </div>
-
     <button class="refresh-btn" id="refresh-btn" onclick="refreshCaptcha()">
       <span id="btn-content">刷新验证码</span>
     </button>
-
     <div class="image-guide-section">
       <div class="image-wrapper">
         <div class="image-label">演示示例说明</div>
         <div class="image-container">
-          ${proxyData.imageBase64 ? `<img src="${proxyData.imageBase64}" alt="图片" class="display-image" onclick="zoomImage(this)" />` : '<div class="no-image">暂无图片</div>'}
+          ${proxy.image_base64 ? `<img src="${proxy.image_base64}" alt="图片" class="display-image" />` : '<div class="no-image">暂无图片</div>'}
         </div>
-        <div class="image-hint">点击图片放大查看</div>
       </div>
       <div class="guide-wrapper">
         <div class="guide-title">如何使用</div>
-        <div class="guide-content">
-          <div class="guide-step">1. 打开应用（腾讯视频APP）→ 手机号登陆</div>
-          <div class="guide-step">2. 将+86改成【美国+1】，粘贴手机号获取</div>
-          <div class="guide-step">3. 返回本页面获取验证码</div>
-          <div class="guide-step">4. 复制验证码到软件内登录即可</div>
-        </div>
+        <div class="guide-step">1. 打开应用（腾讯视频APP）→ 手机号登陆</div>
+        <div class="guide-step">2. 将+86改成【美国+1】，粘贴手机号获取</div>
+        <div class="guide-step">3. 返回本页面获取验证码</div>
+        <div class="guide-step">4. 复制验证码到软件内登录即可</div>
         <div class="guide-note">说明：请确保在有效期内完成登录操作</div>
       </div>
     </div>
-
-    <div id="image-modal" class="image-modal" onclick="closeModal()">
-      <span class="modal-close" onclick="closeModal()">×</span>
-      <img class="modal-content" id="modal-image">
-    </div>
-
     <div class="footer">
       验证码会自动同步更新 | 请确保目标API返回正确格式
     </div>
   </div>
-
   <script>
     const token = '${token}';
     let timerInterval;
@@ -1080,7 +995,7 @@ app.get('/proxy/:token', (req, res) => {
       const hours = Math.floor((seconds % 86400) / 3600);
       const minutes = Math.floor((seconds % 3600) / 60);
       const secs = seconds % 60;
-      
+
       if (days > 0) return days + '天 ' + hours + '小时 ' + minutes + '分';
       if (hours > 0) return hours + '小时 ' + minutes + '分 ' + secs + '秒';
       if (minutes > 0) return minutes + '分 ' + secs + '秒';
@@ -1106,7 +1021,7 @@ app.get('/proxy/:token', (req, res) => {
       const btn = document.getElementById('refresh-btn');
       const btnContent = document.getElementById('btn-content');
       const captchaDisplay = document.getElementById('captcha-display');
-      
+
       btn.disabled = true;
       btnContent.innerHTML = '<span class="loading"></span>获取中...';
 
@@ -1119,7 +1034,7 @@ app.get('/proxy/:token', (req, res) => {
       .then(data => {
         if (data.success && data.data) {
           if (data.data.code) {
-            captchaDisplay.innerHTML = '<div class="captcha-code">' + data.data.code + '</div>';
+            captchaDisplay.innerHTML = '<div class="captcha-code" onclick="copyCaptcha()">' + data.data.code + '</div><button class="copy-btn" id="copy-btn" onclick="copyCaptcha()">点击复制验证码</button>';
             if (data.data.code_time) {
               captchaDisplay.innerHTML += '<div class="captcha-time">获取时间: ' + data.data.code_time + '</div>';
             }
@@ -1133,34 +1048,52 @@ app.get('/proxy/:token', (req, res) => {
       })
       .finally(() => {
         btn.disabled = false;
-        btnContent.textContent = '🔄 刷新验证码';
+        btnContent.textContent = '刷新验证码';
+      });
+    }
+
+    function copyCaptcha() {
+      const captchaCode = document.querySelector('.captcha-code');
+      const copyBtn = document.getElementById('copy-btn');
+      
+      if (!captchaCode || !copyBtn) return;
+
+      const code = captchaCode.textContent.trim();
+      
+      navigator.clipboard.writeText(code).then(() => {
+        copyBtn.textContent = '✓ 已复制';
+        copyBtn.classList.add('copied');
+        
+        setTimeout(() => {
+          copyBtn.textContent = '点击复制验证码';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      }).catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = code;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+          document.execCommand('copy');
+          copyBtn.textContent = '✓ 已复制';
+          copyBtn.classList.add('copied');
+        } catch (e) {
+          alert('复制失败，请手动复制');
+        }
+        document.body.removeChild(textarea);
+        
+        setTimeout(() => {
+          copyBtn.textContent = '点击复制验证码';
+          copyBtn.classList.remove('copied');
+        }, 2000);
       });
     }
 
     timerInterval = setInterval(updateTimer, 1000);
     updateTimer();
-
     setInterval(refreshCaptcha, 10000);
-
-    function zoomImage(img) {
-      const modal = document.getElementById('image-modal');
-      const modalImg = document.getElementById('modal-image');
-      modal.style.display = 'block';
-      modalImg.src = img.src;
-      document.body.style.overflow = 'hidden';
-    }
-
-    function closeModal() {
-      const modal = document.getElementById('image-modal');
-      modal.style.display = 'none';
-      document.body.style.overflow = 'auto';
-    }
-
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') {
-        closeModal();
-      }
-    });
   </script>
 </body>
 </html>
@@ -1173,7 +1106,9 @@ app.get('/proxy/:token', (req, res) => {
 app.post('/proxy/:token', (req, res) => {
   const { token } = req.params
 
-  if (!activeProxies.has(token)) {
+  const proxy = ProxyModel.getByToken(token)
+
+  if (!proxy) {
     return res.json({
       code: 0,
       msg: '',
@@ -1185,11 +1120,8 @@ app.post('/proxy/:token', (req, res) => {
     })
   }
 
-  const proxyData = activeProxies.get(token)
-
-  if (proxyData.expireTime <= Date.now()) {
-    activeProxies.delete(token)
-    tokenManager.removeToken(token)
+  if (proxy.expire_time <= Date.now()) {
+    ProxyModel.markAsExpired(token)
     return res.json({
       code: 0,
       msg: '',
@@ -1201,10 +1133,10 @@ app.post('/proxy/:token', (req, res) => {
     })
   }
 
-  const expiredDateStr = formatExpiredDate(proxyData.expireTime)
+  const expiredDateStr = formatExpiredDate(proxy.expire_time)
 
-  const proxy = createProxyMiddleware({
-    target: proxyData.targetUrl,
+  const proxyMiddleware = createProxyMiddleware({
+    target: proxy.target_url,
     changeOrigin: true,
     pathRewrite: {
       [`^/proxy/${token}`]: ''
@@ -1212,7 +1144,7 @@ app.post('/proxy/:token', (req, res) => {
     selfHandleResponse: true,
     onProxyReq: (proxyReq, req) => {
       proxyReq.setHeader('X-Proxy-Token', token)
-      proxyReq.setHeader('X-Proxy-Phone', proxyData.phone || '')
+      proxyReq.setHeader('X-Proxy-Phone', proxy.phone || '')
       proxyReq.setHeader('X-Forwarded-For', req.ip)
     },
     onProxyRes: (proxyRes, req, res) => {
@@ -1227,22 +1159,19 @@ app.post('/proxy/:token', (req, res) => {
 
           if (parsed.data && typeof parsed.data === 'object') {
             parsed.data.expired_date = expiredDateStr
-            
+
             if (parsed.data.code !== undefined) {
               let code = parsed.data.code || ''
               const match = code.match(/(\d{4,8})/)
               if (match) {
                 code = match[1]
               }
-              proxyData.captchaCode = code
-              proxyData.captchaTime = parsed.data.code_time || formatExpiredDate(Date.now())
-              activeProxies.set(token, proxyData)
-              
-              const tokenData = tokenManager.getToken(token)
-              if (tokenData) {
-                tokenData.captchaCode = proxyData.captchaCode
-                tokenData.captchaTime = proxyData.captchaTime
-              }
+              const captchaTime = parsed.data.code_time || formatExpiredDate(Date.now())
+
+              ProxyModel.update(token, {
+                captchaCode: code,
+                captchaTime: captchaTime
+              })
             }
           }
 
@@ -1277,18 +1206,23 @@ app.post('/proxy/:token', (req, res) => {
     }
   })
 
-  proxy(req, res)
+  proxyMiddleware(req, res)
 })
 
 app.get('/api/proxy/timer', (req, res) => {
   const { token } = req.query
-  
-  if (!token || !activeProxies.has(token)) {
+
+  if (!token) {
     return res.json({ code: 400, success: false, msg: 'Invalid token' })
   }
 
-  const proxyData = activeProxies.get(token)
-  const remainingSeconds = Math.max(0, Math.floor((proxyData.expireTime - Date.now()) / 1000))
+  const proxy = ProxyModel.getByToken(token)
+
+  if (!proxy) {
+    return res.json({ code: 400, success: false, msg: 'Invalid token' })
+  }
+
+  const remainingSeconds = Math.max(0, Math.floor((proxy.expire_time - Date.now()) / 1000))
 
   res.json({
     code: 200,
@@ -1300,24 +1234,27 @@ app.get('/api/proxy/timer', (req, res) => {
 
 app.get('/api/user/list', (req, res) => {
   try {
-    const users = []
-    userStore.forEach((user, id) => {
-      const proxyTokens = userProxyMap.get(id) || []
-      users.push({
+    const users = UserModel.getAll()
+    const formattedUsers = users.map(user => {
+      const proxyCount = UserModel.getUserProxies(user.id).length
+      return {
         id: user.id,
         username: user.username,
         nickname: user.nickname,
+        email: user.email,
         role: user.role,
         status: user.status,
-        createdAt: user.createdAt,
-        proxyCount: proxyTokens.length,
-      })
+        permissions: JSON.parse(user.permissions || '[]'),
+        createdAt: user.created_at,
+        proxyCount
+      }
     })
+
     res.json({
       code: 200,
       success: true,
       msg: 'success',
-      data: users,
+      data: formattedUsers
     })
   } catch (error) {
     console.error('[USER] Error listing users:', error)
@@ -1327,42 +1264,34 @@ app.get('/api/user/list', (req, res) => {
 
 app.post('/api/user/create', (req, res) => {
   try {
-    const { username, password, nickname, role = 'user' } = req.body
+    const { username, password, nickname, email, role } = req.body
 
     if (!username || !password || !nickname) {
       return res.status(400).json({ code: 400, success: false, msg: 'Missing required fields' })
     }
 
-    if (userStore.has(username)) {
+    const existingUser = UserModel.getByUsername(username)
+    if (existingUser) {
       return res.status(400).json({ code: 400, success: false, msg: 'Username already exists' })
     }
 
     const userId = generateUserId()
-    const newUser = {
+    const newUser = UserModel.create({
       id: userId,
       username,
       password,
       nickname,
-      role,
+      email,
+      role: role || 'user',
       status: 'active',
-      createdAt: Date.now(),
-    }
-
-    userStore.set(userId, newUser)
-    userProxyMap.set(userId, [])
+      permissions: []
+    })
 
     res.json({
       code: 200,
       success: true,
       msg: 'success',
-      data: {
-        id: userId,
-        username,
-        nickname,
-        role,
-        status: 'active',
-        createdAt: newUser.createdAt,
-      },
+      data: newUser
     })
   } catch (error) {
     console.error('[USER] Error creating user:', error)
@@ -1373,33 +1302,26 @@ app.post('/api/user/create', (req, res) => {
 app.put('/api/user/:id', (req, res) => {
   try {
     const { id } = req.params
-    const { password, nickname, role, status } = req.body
+    const { password, nickname, email, role, status, permissions } = req.body
 
-    if (!userStore.has(id)) {
+    const existingUser = UserModel.getById(id)
+    if (!existingUser) {
       return res.status(404).json({ code: 404, success: false, msg: 'User not found' })
     }
 
-    const user = userStore.get(id)
-
-    if (password) {
-      user.password = password
-    }
-    if (nickname) {
-      user.nickname = nickname
-    }
-    if (role) {
-      user.role = role
-    }
-    if (status) {
-      user.status = status
-    }
-
-    userStore.set(id, user)
+    UserModel.update(id, {
+      password,
+      nickname,
+      email,
+      role,
+      status,
+      permissions
+    })
 
     res.json({
       code: 200,
       success: true,
-      msg: 'success',
+      msg: 'success'
     })
   } catch (error) {
     console.error('[USER] Error updating user:', error)
@@ -1415,17 +1337,17 @@ app.delete('/api/user/:id', (req, res) => {
       return res.status(400).json({ code: 400, success: false, msg: 'Cannot delete admin user' })
     }
 
-    if (!userStore.has(id)) {
+    const existingUser = UserModel.getById(id)
+    if (!existingUser) {
       return res.status(404).json({ code: 404, success: false, msg: 'User not found' })
     }
 
-    userStore.delete(id)
-    userProxyMap.delete(id)
+    UserModel.delete(id)
 
     res.json({
       code: 200,
       success: true,
-      msg: 'success',
+      msg: 'success'
     })
   } catch (error) {
     console.error('[USER] Error deleting user:', error)
@@ -1437,31 +1359,26 @@ app.get('/api/user/:id/proxies', (req, res) => {
   try {
     const { id } = req.params
 
-    if (!userStore.has(id)) {
+    const user = UserModel.getById(id)
+    if (!user) {
       return res.status(404).json({ code: 404, success: false, msg: 'User not found' })
     }
 
-    const proxyTokens = userProxyMap.get(id) || []
-    const proxies = []
-
-    proxyTokens.forEach(token => {
-      if (activeProxies.has(token)) {
-        const proxyData = activeProxies.get(token)
-        proxies.push({
-          token,
-          phone: proxyData.phone,
-          targetUrl: proxyData.targetUrl,
-          expireTime: proxyData.expireTime,
-          expiredDate: formatExpiredDate(proxyData.expireTime),
-        })
-      }
-    })
+    const proxies = UserModel.getUserProxies(id)
+    const formattedProxies = proxies.map(proxy => ({
+      token: proxy.token,
+      phone: proxy.phone,
+      targetUrl: proxy.target_url,
+      expireTime: proxy.expire_time,
+      expiredDate: formatExpiredDate(proxy.expire_time),
+      status: proxy.status
+    }))
 
     res.json({
       code: 200,
       success: true,
       msg: 'success',
-      data: proxies,
+      data: formattedProxies
     })
   } catch (error) {
     console.error('[USER] Error getting user proxies:', error)
@@ -1474,7 +1391,8 @@ app.post('/api/user/:id/assign-proxies', (req, res) => {
     const { id } = req.params
     const { proxies } = req.body
 
-    if (!userStore.has(id)) {
+    const user = UserModel.getById(id)
+    if (!user) {
       return res.status(404).json({ code: 404, success: false, msg: 'User not found' })
     }
 
@@ -1482,19 +1400,12 @@ app.post('/api/user/:id/assign-proxies', (req, res) => {
       return res.status(400).json({ code: 400, success: false, msg: 'Proxies must be an array' })
     }
 
-    const validTokens = []
-    proxies.forEach(token => {
-      if (activeProxies.has(token)) {
-        validTokens.push(token)
-      }
-    })
-
-    userProxyMap.set(id, validTokens)
+    UserModel.assignProxiesToUser(id, proxies)
 
     res.json({
       code: 200,
       success: true,
-      msg: 'success',
+      msg: 'success'
     })
   } catch (error) {
     console.error('[USER] Error assigning proxies:', error)
@@ -1502,15 +1413,59 @@ app.post('/api/user/:id/assign-proxies', (req, res) => {
   }
 })
 
+app.get('/api/stats', (req, res) => {
+  try {
+    const userStats = {
+      total: UserModel.getAll().length,
+      active: UserModel.getAll().filter(u => u.status === 'active').length
+    }
+
+    const proxyStats = ProxyModel.getStats()
+
+    res.json({
+      code: 200,
+      success: true,
+      msg: 'success',
+      data: {
+        users: userStats,
+        proxies: proxyStats
+      }
+    })
+  } catch (error) {
+    console.error('[STATS] Error getting stats:', error)
+    res.status(500).json({ code: 500, success: false, msg: 'Failed to get stats' })
+  }
+})
+
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: Date.now() })
 })
 
+const distPath = path.join(__dirname, '..', 'dist')
+if (fs.existsSync(distPath)) {
+  console.log(`[SERVER] Serving static files from: ${distPath}`)
+  app.use(express.static(distPath))
+  
+  app.get('*', (req, res) => {
+    const indexPath = path.join(distPath, 'index.html')
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath)
+    } else {
+      res.status(404).send('Frontend not built yet. Please run: npm run build')
+    }
+  })
+} else {
+  console.log('[SERVER] Warning: dist folder not found. Frontend not deployed.')
+  console.log('[SERVER] To deploy frontend, run: npm run build')
+}
+
 const server = app.listen(PORT, () => {
-  console.log(`[PROXY] Proxy server running on http://localhost:${PORT}`)
-  console.log(`[PROXY] Create proxy endpoint: POST /api/proxy/create`)
-  console.log(`[PROXY] List proxies endpoint: GET /api/proxy/list`)
-  console.log(`[PROXY] User management endpoint: GET /api/user/list`)
+  console.log(`[PROXY] Server running on http://localhost:${PORT}`)
+  console.log(`[PROXY] Database: SQLite (${require('path').join(__dirname, '../data/app.db')})`)
+  console.log(`[PROXY] Create proxy: POST /api/proxy/create`)
+  console.log(`[PROXY] List proxies: GET /api/proxy/list`)
+  console.log(`[PROXY] User management: GET /api/user/list`)
+  console.log(`[PROXY] Stats: GET /api/stats`)
 })
 
 process.on('SIGTERM', () => {

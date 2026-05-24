@@ -272,15 +272,27 @@
         this.$message.success('图片识别成功')
       },
 
-      copyResult() {
-        this.$copyText(this.scanResult).then(
-          () => {
+      async copyResult() {
+        try {
+          await navigator.clipboard.writeText(this.scanResult)
+          this.$message.success('复制成功')
+        } catch (error) {
+          // 降级方案：使用传统方式复制
+          const input = document.createElement('input')
+          input.value = this.scanResult
+          input.style.position = 'fixed'
+          input.style.opacity = '0'
+          document.body.appendChild(input)
+          input.select()
+          try {
+            document.execCommand('copy')
             this.$message.success('复制成功')
-          },
-          () => {
+          } catch (error) {
             this.$message.error('复制失败')
+          } finally {
+            document.body.removeChild(input)
           }
-        )
+        }
       },
 
       openUrl() {

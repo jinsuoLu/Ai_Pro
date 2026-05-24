@@ -16,6 +16,13 @@
           <el-checkbox label="editor" />
         </el-checkbox-group>
       </el-form-item>
+      <el-form-item label="角色" prop="role">
+        <el-select v-model="form.role" placeholder="请选择角色">
+          <el-option label="管理员" value="admin" />
+          <el-option label="编辑员" value="editor" />
+          <el-option label="普通用户" value="user" />
+        </el-select>
+      </el-form-item>
     </el-form>
     <div slot="footer" class="dialog-footer">
       <el-button @click="close">取 消</el-button>
@@ -66,10 +73,14 @@
       save() {
         this.$refs['form'].validate(async (valid) => {
           if (valid) {
-            const { msg } = await doEdit(this.form)
-            this.$baseMessage(msg, 'success')
-            this.$emit('fetch-data')
-            this.close()
+            const res = await doEdit(this.form)
+            if (res.success) {
+              this.$baseMessage(res.msg, 'success')
+              this.$emit('fetch-data')
+              this.close()
+            } else {
+              this.$baseMessage(res.msg, 'error')
+            }
           } else {
             return false
           }
